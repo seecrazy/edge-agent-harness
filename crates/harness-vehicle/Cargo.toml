@@ -1,0 +1,13 @@
+[package]
+name = "harness-vehicle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic vehicle API and Android Automotive VHAL read gateway"
+
+[dependencies]
+harness-policy = { path = "../harness-policy" }
+
+[lints]
+workspace = true
+

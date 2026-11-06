@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/harness-core",
+    "crates/harness-ipc",
+    "crates/harness-model",
+    "crates/harness-policy",
+    "crates/harness-privacy",
+    "crates/harness-profile",
+    "crates/harness-storage",
+    "crates/harness-tools",
+    "crates/harness-vehicle",
+    "platform/linux-ivi/agent-daemon",
+    "platform/linux-ivi/vehicle-simulator",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://example.invalid/edge-agent-harness"
+
+[workspace.dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+

@@ -1,0 +1,19 @@
+[package]
+name = "harness-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Resource-bounded task supervisor for Edge Agent Harness"
+
+[dependencies]
+harness-policy = { path = "../harness-policy" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+harness-model = { path = "../harness-model" }
+harness-tools = { path = "../harness-tools" }
+
+[lints]
+workspace = true
+

@@ -1,0 +1,18 @@
+[package]
+name = "harness-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SQLite event and checkpoint persistence for Edge Agent Harness"
+
+[dependencies]
+harness-core = { path = "../harness-core" }
+rusqlite.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+harness-policy = { path = "../harness-policy" }
+
+[lints]
+workspace = true
+

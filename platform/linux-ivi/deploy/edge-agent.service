@@ -1,0 +1,35 @@
+[Unit]
+Description=Edge Agent Harness vehicle daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=10
+User=edge-agent
+Group=edge-agent
+ExecStart=/usr/libexec/edge-agent-harness/agent-daemon \
+  --db /var/lib/edge-agent/tasks.sqlite \
+  --socket /run/edge-agent/agent.sock \
+  --event-capacity 256 \
+  --resource-file /run/edge-agent/resource.json
+RuntimeDirectory=edge-agent
+StateDirectory=edge-agent
+RuntimeDirectoryMode=0750
+StateDirectoryMode=0750
+MemoryMax=256M
+CPUWeight=20
+IOWeight=20
+Nice=10
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/edge-agent /run/edge-agent
+
+[Install]
+WantedBy=multi-user.target

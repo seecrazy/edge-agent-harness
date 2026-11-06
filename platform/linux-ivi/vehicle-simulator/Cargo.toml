@@ -1,0 +1,15 @@
+[package]
+name = "vehicle-simulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Development vehicle platform state simulator for Edge Agent Harness"
+
+[dependencies]
+harness-core = { path = "../../../crates/harness-core" }
+harness-policy = { path = "../../../crates/harness-policy" }
+serde_json.workspace = true
+
+[lints]
+workspace = true
+

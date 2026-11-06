@@ -1,0 +1,13 @@
+[package]
+name = "harness-privacy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic redaction pipeline for Edge Agent Harness"
+
+[dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
+

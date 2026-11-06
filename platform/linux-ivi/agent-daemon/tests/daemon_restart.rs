@@ -153,7 +153,9 @@ fn daemon_adopts_resource_snapshot_file() {
             "thermal_state":"nominal",
             "battery_percent":60,
             "charging":false,
-            "model_available":true
+            "model_available":true,
+            "cpu_headroom_percent":80,
+            "user_attention":true
         }"#,
     )
     .expect("resource file should write");

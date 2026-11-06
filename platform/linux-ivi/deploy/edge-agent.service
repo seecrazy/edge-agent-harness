@@ -13,7 +13,8 @@ ExecStart=/usr/libexec/edge-agent-harness/agent-daemon \
   --db /var/lib/edge-agent/tasks.sqlite \
   --socket /run/edge-agent/agent.sock \
   --event-capacity 256 \
-  --resource-file /run/edge-agent/resource.json
+  --resource-file /run/edge-agent/resource.json \
+  --max-events 4096
 RuntimeDirectory=edge-agent
 StateDirectory=edge-agent
 RuntimeDirectoryMode=0750

@@ -588,6 +588,22 @@ impl TaskStore {
         })
     }
 
+    /// Compacts only when the committed event count exceeds a threshold.
+    pub fn compact_retention_if_over(
+        &mut self,
+        max_events: u64,
+    ) -> Result<CompactionReport, StorageError> {
+        let current = self.event_count()?;
+        if current <= max_events {
+            return Ok(CompactionReport {
+                compacted_tasks: 0,
+                removed_events: 0,
+                retained_events: current,
+            });
+        }
+        self.compact_retention()
+    }
+
     fn apply_event(task: &mut Task, event: &Event) -> Result<(), CoreError> {
         match event.event_type {
             EventType::TaskCreated => Ok(()),
@@ -703,6 +719,30 @@ impl PersistentTaskSupervisor {
     ) -> Result<harness_core::Task, StorageError> {
         self.supervisor
             .transition(task_id, next, now_ms)
+            .map_err(|error| StorageError::Replay(error.to_string()))
+            .cloned()
+    }
+
+    /// Pauses a task durably.
+    pub fn pause_task(
+        &mut self,
+        task_id: &str,
+        now_ms: u64,
+    ) -> Result<harness_core::Task, StorageError> {
+        self.supervisor
+            .pause_task(task_id, now_ms)
+            .map_err(|error| StorageError::Replay(error.to_string()))
+            .cloned()
+    }
+
+    /// Resumes a paused task durably.
+    pub fn resume_task(
+        &mut self,
+        task_id: &str,
+        now_ms: u64,
+    ) -> Result<harness_core::Task, StorageError> {
+        self.supervisor
+            .resume_task(task_id, now_ms)
             .map_err(|error| StorageError::Replay(error.to_string()))
             .cloned()
     }
@@ -830,6 +870,23 @@ impl PersistentTaskSupervisor {
             store.save_checkpoint(task, now_ms)?;
         }
         store.compact_retention()
+    }
+
+    /// Compacts only when the committed event count exceeds a threshold.
+    pub fn compact_if_over(
+        &mut self,
+        max_events: u64,
+        now_ms: u64,
+    ) -> Result<CompactionReport, StorageError> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|error| StorageError::Replay(error.to_string()))?;
+        let tasks = self.supervisor.tasks();
+        for task in &tasks {
+            store.save_checkpoint(task, now_ms)?;
+        }
+        store.compact_retention_if_over(max_events)
     }
 }
 
@@ -1094,5 +1151,35 @@ mod tests {
             .connection
             .execute("DELETE FROM events WHERE sequence = 3", [])
             .is_err());
+    }
+
+    #[test]
+    fn compact_if_over_only_compacts_above_threshold() {
+        let mut store = TaskStore::in_memory();
+        let task = Task {
+            id: "task-1".into(),
+            session_id: "session-1".into(),
+            goal: "threshold".into(),
+            task_class: TaskClass::FastQa,
+            status: TaskStatus::Pending,
+            budget: TaskBudget::fast_qa(),
+            usage: Default::default(),
+            created_at: 1_000,
+            updated_at: 1_000,
+        };
+        for sequence in 1..=3 {
+            store.append_event(&valid_event(sequence)).unwrap();
+        }
+        store.save_checkpoint(&task, 1_000).unwrap();
+
+        let noop = store.compact_retention_if_over(100).unwrap();
+        assert_eq!(noop.compacted_tasks, 0);
+        assert_eq!(noop.removed_events, 0);
+        assert_eq!(noop.retained_events, 3);
+
+        let report = store.compact_retention_if_over(2).unwrap();
+        assert_eq!(report.compacted_tasks, 1);
+        assert_eq!(report.removed_events, 2);
+        assert_eq!(report.retained_events, 1);
     }
 }

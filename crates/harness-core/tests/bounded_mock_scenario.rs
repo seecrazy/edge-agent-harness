@@ -24,6 +24,8 @@ fn high_speed_mock_scenario_stays_bounded_and_auditable() {
         battery_percent: 80,
         charging: false,
         model_available: true,
+        cpu_headroom_percent: 80,
+        user_attention: true,
     };
     let request = CreateTaskRequest {
         id: "task-high-speed",

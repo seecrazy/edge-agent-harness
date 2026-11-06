@@ -97,6 +97,10 @@ Phase 0 notes:
 - [x] Reuse SQLite crash/replay behavior through `PersistentTaskSupervisor`.
 - [x] Add daemon-level crash/restart tests.
 - [x] Add a development vehicle simulator that cycles platform modes.
+- [x] Add pause/resume lifecycle and bounded approval retention.
+- [x] Add CPU headroom and user-attention admission inputs.
+- [x] Add consent-gated model router.
+- [x] Add event-count compaction threshold.
 
 ## Phase 3: Android Automotive integration
 

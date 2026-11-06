@@ -21,6 +21,8 @@ fn snapshot() -> ResourceSnapshot {
         battery_percent: 80,
         charging: false,
         model_available: true,
+        cpu_headroom_percent: 80,
+        user_attention: true,
     }
 }
 

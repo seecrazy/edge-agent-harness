@@ -108,6 +108,64 @@ pub enum CloudRejection {
     PrivacySensitive,
 }
 
+/// Runtime-level request passed to the model router.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RouterRequest {
+    /// Whether the user explicitly consented to cloud execution.
+    pub user_consent: bool,
+    /// Current execution mode.
+    pub mode: ExecutionMode,
+    /// Whether the input is privacy-sensitive.
+    pub privacy_sensitive: bool,
+    /// Whether redaction was confirmed before transport.
+    pub privacy_filter_confirmed: bool,
+}
+
+/// Routes each model call between local and consent-gated cloud runtimes.
+#[derive(Debug)]
+pub struct ModelRouter<L, C>
+where
+    L: ModelRuntime,
+    C: ModelRuntime,
+{
+    local: L,
+    cloud: C,
+    policy: CloudFallbackPolicy,
+}
+
+impl<L, C> ModelRouter<L, C>
+where
+    L: ModelRuntime,
+    C: ModelRuntime,
+{
+    /// Creates a router with local and cloud runtimes.
+    #[must_use]
+    pub fn new(local: L, cloud: C, policy: CloudFallbackPolicy) -> Self {
+        Self {
+            local,
+            cloud,
+            policy,
+        }
+    }
+
+    /// Generates one bounded model response using local or cloud path.
+    pub fn generate(
+        &mut self,
+        prompt: ModelPrompt<'_>,
+        request: RouterRequest,
+    ) -> Result<ModelResponse, ModelError> {
+        match self.policy.decide(
+            request.user_consent,
+            request.mode,
+            request.privacy_sensitive,
+            request.privacy_filter_confirmed,
+        ) {
+            CloudDecision::Cloud => self.cloud.generate(prompt),
+            CloudDecision::Local | CloudDecision::Rejected(_) => self.local.generate(prompt),
+        }
+    }
+}
+
 /// Bounded prompt supplied to a model runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelPrompt<'a> {
@@ -229,5 +287,48 @@ mod tests {
             policy.decide(true, ExecutionMode::DriveHighSpeed, false, false),
             CloudDecision::Rejected(CloudRejection::DrivingDisallowed)
         );
+    }
+
+    #[test]
+    fn model_router_routes_local_and_cloud() {
+        let local = MockModelRuntime::new(ModelOutput::Completed("local".into()), 10);
+        let cloud = MockModelRuntime::new(ModelOutput::Completed("cloud".into()), 10);
+        let policy = CloudFallbackPolicy {
+            enabled: true,
+            require_user_consent: true,
+            allow_driving: false,
+            privacy_filter_required: true,
+        };
+        let mut router = ModelRouter::new(local, cloud, policy);
+        let prompt = ModelPrompt {
+            goal: "route",
+            max_tokens: 100,
+        };
+
+        let local_out = router
+            .generate(
+                prompt,
+                RouterRequest {
+                    user_consent: false,
+                    mode: ExecutionMode::Park,
+                    privacy_sensitive: false,
+                    privacy_filter_confirmed: false,
+                },
+            )
+            .expect("local path");
+        assert_eq!(local_out.output, ModelOutput::Completed("local".into()));
+
+        let cloud_out = router
+            .generate(
+                prompt,
+                RouterRequest {
+                    user_consent: true,
+                    mode: ExecutionMode::Park,
+                    privacy_sensitive: false,
+                    privacy_filter_confirmed: false,
+                },
+            )
+            .expect("cloud path");
+        assert_eq!(cloud_out.output, ModelOutput::Completed("cloud".into()));
     }
 }

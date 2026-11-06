@@ -160,6 +160,20 @@ pub enum IpcRequest {
         /// Platform decision timestamp.
         now_ms: u64,
     },
+    /// Pause a task.
+    Pause {
+        /// Task identifier.
+        task_id: String,
+        /// Platform timestamp.
+        now_ms: u64,
+    },
+    /// Resume a paused task.
+    Resume {
+        /// Task identifier.
+        task_id: String,
+        /// Platform timestamp.
+        now_ms: u64,
+    },
 }
 
 impl IpcRequest {
@@ -347,6 +361,17 @@ impl UnixIpcServer {
         Ok(response)
     }
 
+    /// Compacts durable events when the committed count exceeds a threshold.
+    pub fn compact_if_over(
+        &mut self,
+        max_events: u64,
+        now_ms: u64,
+    ) -> Result<harness_storage::CompactionReport, IpcError> {
+        self.supervisor
+            .compact_if_over(max_events, now_ms)
+            .map_err(|error| IpcError::Internal(error.to_string()))
+    }
+
     /// Handles one typed request without socket I/O.
     #[must_use]
     pub fn handle_request(&mut self, request: IpcRequest) -> IpcResponse {
@@ -435,6 +460,12 @@ impl UnixIpcServer {
                 Ok(status) => IpcResponse::Approval { status },
                 Err(error) => IpcResponse::error(IpcErrorCode::Rejected, error),
             },
+            IpcRequest::Pause { task_id, now_ms } => {
+                self.result_response(|supervisor| supervisor.pause_task(&task_id, now_ms))
+            }
+            IpcRequest::Resume { task_id, now_ms } => {
+                self.result_response(|supervisor| supervisor.resume_task(&task_id, now_ms))
+            }
         }
     }
 
@@ -508,6 +539,8 @@ mod tests {
             battery_percent: 80,
             charging: false,
             model_available: true,
+            cpu_headroom_percent: 80,
+            user_attention: true,
         }
     }
 
@@ -679,6 +712,63 @@ mod tests {
                 status: ApprovalStatus::Approved
             }
         );
+
+        std::fs::remove_file(&socket_path).expect("socket should be removed");
+        std::fs::remove_file(&database_path).expect("database should be removed");
+    }
+
+    #[test]
+    fn ipc_can_pause_and_resume_tasks() {
+        let database_path = temp_path("ipc-db-pause");
+        let socket_path = temp_path("ipc-socket-pause");
+        let mut server = UnixIpcServer::bind(
+            &database_path,
+            &socket_path,
+            AdmissionController::conservative(),
+            32,
+            snapshot(),
+        )
+        .expect("server should bind");
+
+        let created = server.handle_request(IpcRequest::CreateTask {
+            id: "pause-task".into(),
+            session_id: "session".into(),
+            goal: "pause".into(),
+            task_class: TaskClass::FastQa,
+            needs_model: false,
+            now_ms: 1_000,
+        });
+        assert!(matches!(created, IpcResponse::Task { .. }));
+        let planning = server.handle_request(IpcRequest::Transition {
+            task_id: "pause-task".into(),
+            next: TaskStatus::Planning,
+            now_ms: 1_001,
+        });
+        assert!(matches!(planning, IpcResponse::Task { .. }));
+        let running = server.handle_request(IpcRequest::Transition {
+            task_id: "pause-task".into(),
+            next: TaskStatus::Running,
+            now_ms: 1_002,
+        });
+        assert!(matches!(running, IpcResponse::Task { .. }));
+
+        let paused = server.handle_request(IpcRequest::Pause {
+            task_id: "pause-task".into(),
+            now_ms: 1_003,
+        });
+        let IpcResponse::Task { task } = paused else {
+            panic!("pause should return a task");
+        };
+        assert_eq!(task.status, TaskStatus::Paused);
+
+        let resumed = server.handle_request(IpcRequest::Resume {
+            task_id: "pause-task".into(),
+            now_ms: 1_004,
+        });
+        let IpcResponse::Task { task } = resumed else {
+            panic!("resume should return a task");
+        };
+        assert_eq!(task.status, TaskStatus::Running);
 
         std::fs::remove_file(&socket_path).expect("socket should be removed");
         std::fs::remove_file(&database_path).expect("database should be removed");

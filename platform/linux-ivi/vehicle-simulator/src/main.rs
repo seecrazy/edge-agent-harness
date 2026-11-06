@@ -97,6 +97,8 @@ fn resource_snapshot(mode: ExecutionMode) -> ResourceSnapshot {
         battery_percent: 70,
         charging: matches!(mode, ExecutionMode::Charging),
         model_available: !matches!(mode, ExecutionMode::SystemBusy),
+        cpu_headroom_percent: 80,
+        user_attention: true,
     }
 }
 

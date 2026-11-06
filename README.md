@@ -117,6 +117,10 @@ and vehicle API rate limiting.
 - [ADR 0014: Android Automotive VHAL read gateway](docs/adr/0014-android-automotive-vhal-read-gateway.md)
 - [ADR 0015: Device profiles and bounded approval](docs/adr/0015-device-profiles-and-bounded-approval.md)
 - [ADR 0016: Consent-gated cloud fallback and redaction](docs/adr/0016-consent-gated-cloud-fallback-and-redaction.md)
+- [ADR 0017: Pause/resume and approval retention](docs/adr/0017-pause-resume-and-bounded-approval-retention.md)
+- [ADR 0018: CPU and attention admission](docs/adr/0018-cpu-and-attention-admission-inputs.md)
+- [ADR 0019: Model router](docs/adr/0019-model-router-with-consent-gated-cloud-fallback.md)
+- [ADR 0020: Event-count compaction threshold](docs/adr/0020-event-count-compaction-threshold.md)
 
 ## Planned platform support
 
@@ -136,7 +140,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The current host is verified with 61 Rust unit/integration tests plus formatting and clippy checks. Ubuntu and macOS workflows are configured in `.github/workflows/ci.yml`; the Linux result is not verified until the workflow runs on a hosted runner.
+The current host is verified with 69 Rust unit/integration tests plus formatting and clippy checks. Ubuntu and macOS workflows are configured in `.github/workflows/ci.yml`; the Linux result is not verified until the workflow runs on a hosted runner.
 
 ## Linux daemon skeleton
 
@@ -146,7 +150,8 @@ cargo run -p agent-daemon -- \
   --socket /run/edge-agent/agent.sock \
   --event-capacity 256 \
   --resource-file /run/edge-agent/resource.json \
-  --device-tier mainstream
+  --device-tier mainstream \
+  --max-events 4096
 ```
 
 A systemd unit with resource limits is available at:

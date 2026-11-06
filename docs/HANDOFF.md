@@ -86,6 +86,8 @@
   constrained per device class.
 - Polished `README.md` and `docs/design.md` to reflect the implemented modules,
   data model, acceptance checklist, project layout, and remaining boundaries.
+- Added pause/resume lifecycle, bounded approval retention, CPU/attention
+  admission inputs, a consent-gated model router, and event-count compaction.
 - Added a bounded Unix-domain JSON IPC protocol and Linux daemon skeleton.
 - Added a systemd unit with memory, CPU, I/O, priority, sandbox, and restart
   limits.
@@ -103,7 +105,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Current result: 61 tests pass. Tests were run on macOS/aarch64 with Rust 1.88.
+Current result: 69 tests pass. Tests were run on macOS/aarch64 with Rust 1.88.
 
 ## Important boundaries
 

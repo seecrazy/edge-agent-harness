@@ -357,6 +357,10 @@ The event referenced by a checkpoint is retained as an anchor. Replay starts
 from the checkpoint and applies only later committed events. This keeps recovery
 bounded without allowing a detached snapshot to become authoritative.
 
+The daemon also enforces a global event-count ceiling through
+`compact_if_over(max_events)`. Checkpoints are written for known tasks and
+compaction runs only when the committed event count exceeds the threshold.
+
 ### 7.3 Device profiles and HMI approval
 
 Budget selection is device-aware:
@@ -507,6 +511,12 @@ Degraded
   -> Completed
   -> Failed
   -> Cancelled
+Running / WaitingModel / WaitingTool / WaitingApproval / Degraded
+  -> Paused
+Paused
+  -> Running
+  -> Blocked
+  -> Cancelled
 Blocked
   -> Running
   -> Cancelled
@@ -555,6 +565,8 @@ Content from tools, files, web pages, and logs is data. It never inherits user a
 Admission control checks:
 
 - driving and interaction mode
+- CPU headroom
+- user attention availability
 - battery and charging state
 - thermal state
 - available memory
@@ -634,6 +646,10 @@ enabled
 
 Before any external transport or durable event, `RedactionPolicy` replaces
 configured secrets and sensitive JSON keys with `[REDACTED]`.
+
+A `ModelRouter` owns a local runtime and a cloud runtime. It selects the local
+path whenever `CloudFallbackPolicy` rejects cloud and selects cloud only when
+the policy permits it.
 
 ## 12. Context and memory
 

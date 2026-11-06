@@ -9,7 +9,7 @@ use std::fs;
 use std::os::unix::fs::FileTypeExt;
 use std::path::PathBuf;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use harness_core::{AdmissionController, ResourceSnapshot, ThermalState};
 use harness_ipc::{IpcError, UnixIpcServer};
@@ -33,6 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let snapshot = arguments.resource_snapshot();
+    let max_events = arguments.max_events;
     let mut server = UnixIpcServer::bind_with_profile(
         &arguments.database_path,
         &arguments.socket_path,
@@ -74,7 +75,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         match server.serve_once() {
-            Ok(_) => {}
+            Ok(_) => {
+                if let Err(error) = server.compact_if_over(max_events, now_ms()) {
+                    eprintln!("agent-daemon: compaction failed: {error}");
+                }
+            }
             Err(IpcError::Io(error)) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
             Err(error) => eprintln!("agent-daemon: {error}"),
         }
@@ -92,6 +97,7 @@ struct Arguments {
     battery_percent: u8,
     resource_file: Option<PathBuf>,
     device_tier: DeviceTier,
+    max_events: u64,
 }
 
 impl Arguments {
@@ -104,6 +110,7 @@ impl Arguments {
         let mut battery_percent = 80;
         let mut resource_file = None;
         let mut device_tier = DeviceTier::Mainstream;
+        let mut max_events = 4_096;
 
         let mut args = env::args().skip(1);
         while let Some(argument) = args.next() {
@@ -145,6 +152,13 @@ impl Arguments {
                     let value = args.next().ok_or("--device-tier requires a value")?;
                     device_tier = parse_device_tier(&value)?;
                 }
+                "--max-events" => {
+                    max_events = args
+                        .next()
+                        .ok_or("--max-events requires a value")?
+                        .parse()
+                        .map_err(|_| "--max-events must be a positive integer")?;
+                }
                 other => return Err(format!("unknown argument: {other}").into()),
             }
         }
@@ -158,6 +172,7 @@ impl Arguments {
             battery_percent,
             resource_file,
             device_tier,
+            max_events,
         })
     }
 
@@ -180,6 +195,8 @@ impl Arguments {
             battery_percent: self.battery_percent,
             charging: self.charging,
             model_available: true,
+            cpu_headroom_percent: 80,
+            user_attention: true,
         }
     }
 }
@@ -204,6 +221,15 @@ fn parse_device_tier(value: &str) -> Result<DeviceTier, String> {
         "entry" => Ok(DeviceTier::Entry),
         _ => Err(format!("unknown device tier: {value}")),
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should advance")
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn parse_resource_snapshot(content: &str) -> Result<ResourceSnapshot, String> {
@@ -245,7 +271,9 @@ mod tests {
                 "thermal_state":"nominal",
                 "battery_percent":60,
                 "charging":false,
-                "model_available":true
+                "model_available":true,
+                "cpu_headroom_percent":80,
+                "user_attention":true
             }"#,
         )
         .expect("snapshot should parse");

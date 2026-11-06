@@ -1,6 +1,6 @@
 //! Core task lifecycle, admission control, and append-only event primitives.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -81,6 +81,8 @@ pub enum TaskStatus {
     WaitingTool,
     /// Task is using a fallback or reduced capability.
     Degraded,
+    /// Task is paused and can be resumed.
+    Paused,
     /// Task cannot continue without user or platform action.
     Blocked,
     /// Task completed successfully.
@@ -103,6 +105,7 @@ impl TaskStatus {
             Self::WaitingModel => "WaitingModel",
             Self::WaitingTool => "WaitingTool",
             Self::Degraded => "Degraded",
+            Self::Paused => "Paused",
             Self::Blocked => "Blocked",
             Self::Completed => "Completed",
             Self::Failed => "Failed",
@@ -121,6 +124,7 @@ impl TaskStatus {
             "WaitingModel" => Some(Self::WaitingModel),
             "WaitingTool" => Some(Self::WaitingTool),
             "Degraded" => Some(Self::Degraded),
+            "Paused" => Some(Self::Paused),
             "Blocked" => Some(Self::Blocked),
             "Completed" => Some(Self::Completed),
             "Failed" => Some(Self::Failed),
@@ -171,6 +175,18 @@ impl TaskStatus {
                         | Self::Completed
                         | Self::Failed
                         | Self::Cancelled
+                )
+                | (
+                    Self::Running
+                        | Self::WaitingModel
+                        | Self::WaitingTool
+                        | Self::WaitingApproval
+                        | Self::Degraded,
+                    Self::Paused
+                )
+                | (
+                    Self::Paused,
+                    Self::Running | Self::Blocked | Self::Cancelled
                 )
                 | (Self::Blocked, Self::Running | Self::Cancelled)
         )
@@ -444,6 +460,10 @@ pub struct ResourceSnapshot {
     pub charging: bool,
     /// Whether a local model runtime is available.
     pub model_available: bool,
+    /// CPU headroom percentage from 0 to 100.
+    pub cpu_headroom_percent: u8,
+    /// Whether the user is available for interaction.
+    pub user_attention: bool,
 }
 
 /// Result of admission control.
@@ -511,6 +531,12 @@ impl AdmissionController {
         }
         if snapshot.thermal_state == ThermalState::Hot {
             return AdmissionDecision::Rejected("thermal state is too high");
+        }
+        if snapshot.cpu_headroom_percent < 10 {
+            return AdmissionDecision::Rejected("cpu headroom is too low");
+        }
+        if !snapshot.user_attention && task_class != TaskClass::UltraFast {
+            return AdmissionDecision::Rejected("user attention unavailable");
         }
         if snapshot.queue_depth >= self.max_queue_depth {
             return AdmissionDecision::Rejected("request queue is full");
@@ -800,16 +826,26 @@ impl std::error::Error for ApprovalError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovalStore {
     pending: HashMap<String, ApprovalRequest>,
+    resolved: VecDeque<ApprovalRequest>,
     max_pending: usize,
+    max_resolved: usize,
 }
 
 impl ApprovalStore {
-    /// Creates an approval store with a bounded pending count.
+    /// Creates an approval store with bounded pending and resolved counts.
     #[must_use]
     pub fn new(max_pending: usize) -> Self {
+        Self::with_capacity(max_pending, max_pending.max(64))
+    }
+
+    /// Creates an approval store with explicit capacity limits.
+    #[must_use]
+    pub fn with_capacity(max_pending: usize, max_resolved: usize) -> Self {
         Self {
             pending: HashMap::new(),
+            resolved: VecDeque::new(),
             max_pending: max_pending.max(1),
+            max_resolved: max_resolved.max(1),
         }
     }
 
@@ -823,10 +859,15 @@ impl ApprovalStore {
         requested_at_ms: u64,
         expires_at_ms: u64,
     ) -> Result<(), ApprovalError> {
-        if self.pending.contains_key(id) {
+        if self.pending.contains_key(id) || self.contains_resolved(id) {
             return Err(ApprovalError::AlreadyResolved);
         }
-        if self.pending.len() >= self.max_pending {
+        let pending_count = self
+            .pending
+            .values()
+            .filter(|request| request.status == ApprovalStatus::Pending)
+            .count();
+        if pending_count >= self.max_pending {
             return Err(ApprovalError::LimitReached);
         }
         self.pending.insert(
@@ -851,29 +892,48 @@ impl ApprovalStore {
         approved: bool,
         now_ms: u64,
     ) -> Result<ApprovalStatus, ApprovalError> {
-        let request = self.pending.get_mut(id).ok_or(ApprovalError::NotFound)?;
+        if self.contains_resolved(id) {
+            return Err(ApprovalError::AlreadyResolved);
+        }
+        let Some(request) = self.pending.get_mut(id) else {
+            return Err(ApprovalError::NotFound);
+        };
         if request.status == ApprovalStatus::Expired || now_ms > request.expires_at_ms {
             request.status = ApprovalStatus::Expired;
             return Err(ApprovalError::Expired);
-        }
-        if request.status != ApprovalStatus::Pending {
-            return Err(ApprovalError::AlreadyResolved);
         }
         request.status = if approved {
             ApprovalStatus::Approved
         } else {
             ApprovalStatus::Rejected
         };
-        Ok(request.status)
+        let status = request.status;
+        let resolved = self.pending.remove(id).expect("request must exist");
+        self.push_resolved(resolved);
+        Ok(status)
     }
 
     /// Returns the current status, applying expiry lazily.
     pub fn status(&mut self, id: &str, now_ms: u64) -> Result<ApprovalStatus, ApprovalError> {
+        if let Some(request) = self.resolved.iter().find(|request| request.id == id) {
+            return Ok(request.status);
+        }
         let request = self.pending.get_mut(id).ok_or(ApprovalError::NotFound)?;
         if request.status == ApprovalStatus::Pending && now_ms > request.expires_at_ms {
             request.status = ApprovalStatus::Expired;
         }
         Ok(request.status)
+    }
+
+    fn contains_resolved(&self, id: &str) -> bool {
+        self.resolved.iter().any(|request| request.id == id)
+    }
+
+    fn push_resolved(&mut self, request: ApprovalRequest) {
+        if self.resolved.len() >= self.max_resolved {
+            self.resolved.pop_front();
+        }
+        self.resolved.push_back(request);
     }
 }
 
@@ -1365,6 +1425,16 @@ impl TaskSupervisor {
             .ok_or_else(|| CoreError::UnknownTask(task_id.to_owned()))
     }
 
+    /// Pauses a task through the state machine.
+    pub fn pause_task(&mut self, task_id: &str, now_ms: u64) -> Result<&Task, CoreError> {
+        self.transition(task_id, TaskStatus::Paused, now_ms)
+    }
+
+    /// Resumes a paused task.
+    pub fn resume_task(&mut self, task_id: &str, now_ms: u64) -> Result<&Task, CoreError> {
+        self.transition(task_id, TaskStatus::Running, now_ms)
+    }
+
     /// Records model token usage against the task budget.
     pub fn consume_model_step(
         &mut self,
@@ -1461,6 +1531,8 @@ mod tests {
             battery_percent: 80,
             charging: false,
             model_available: true,
+            cpu_headroom_percent: 80,
+            user_attention: true,
         }
     }
 
@@ -1546,6 +1618,44 @@ mod tests {
                 &state,
             ),
             AdmissionDecision::Rejected("battery is too low")
+        );
+    }
+
+    #[test]
+    fn admission_rejects_when_cpu_headroom_is_low() {
+        let controller = AdmissionController::conservative();
+        let mut state = snapshot();
+        state.cpu_headroom_percent = 5;
+
+        assert_eq!(
+            controller.evaluate(
+                TaskClass::UltraFast,
+                &TaskBudget::ultra_fast(),
+                false,
+                &state,
+            ),
+            AdmissionDecision::Rejected("cpu headroom is too low")
+        );
+    }
+
+    #[test]
+    fn admission_rejects_attention_sensitive_tasks_without_user() {
+        let controller = AdmissionController::conservative();
+        let mut state = snapshot();
+        state.user_attention = false;
+
+        assert_eq!(
+            controller.evaluate(TaskClass::FastQa, &TaskBudget::fast_qa(), false, &state,),
+            AdmissionDecision::Rejected("user attention unavailable")
+        );
+        assert_eq!(
+            controller.evaluate(
+                TaskClass::UltraFast,
+                &TaskBudget::ultra_fast(),
+                false,
+                &state,
+            ),
+            AdmissionDecision::Admitted(TaskBudget::ultra_fast())
         );
     }
 
@@ -1650,6 +1760,46 @@ mod tests {
                 current: TaskStatus::Completed,
                 operation: "tool call"
             })
+        );
+    }
+
+    #[test]
+    fn task_can_pause_and_resume() {
+        let mut supervisor = TaskSupervisor::new(AdmissionController::conservative(), 16);
+        let budget = TaskBudget::ultra_fast();
+        let snapshot = snapshot();
+        let request = CreateTaskRequest {
+            id: "task-pause",
+            session_id: "session-1",
+            goal: "Pause and resume",
+            task_class: TaskClass::UltraFast,
+            budget: &budget,
+            needs_model: false,
+            snapshot: &snapshot,
+            now_ms: 1_000,
+        };
+        supervisor.create_task(request).expect("task admitted");
+        supervisor
+            .transition("task-pause", TaskStatus::Planning, 1_001)
+            .expect("planning transition");
+        supervisor
+            .transition("task-pause", TaskStatus::Running, 1_002)
+            .expect("running transition");
+
+        supervisor
+            .pause_task("task-pause", 1_003)
+            .expect("pause transition");
+        assert_eq!(
+            supervisor.task("task-pause").expect("task exists").status,
+            TaskStatus::Paused
+        );
+
+        supervisor
+            .resume_task("task-pause", 1_004)
+            .expect("resume transition");
+        assert_eq!(
+            supervisor.task("task-pause").expect("task exists").status,
+            TaskStatus::Running
         );
     }
 
@@ -1942,6 +2092,69 @@ mod tests {
         assert_eq!(
             store.decide("approval-1", false, 1_600),
             Err(ApprovalError::AlreadyResolved)
+        );
+    }
+
+    #[test]
+    fn approval_resolved_slot_is_reusable() {
+        let mut store = ApprovalStore::new(1);
+        store
+            .request(
+                "approval-1",
+                "task-1",
+                "local.write",
+                "reason",
+                1_000,
+                2_000,
+            )
+            .expect("first approval");
+        store
+            .decide("approval-1", true, 1_500)
+            .expect("first approval resolved");
+
+        store
+            .request(
+                "approval-2",
+                "task-1",
+                "local.write",
+                "reason",
+                1_600,
+                2_600,
+            )
+            .expect("pending slot should be reusable");
+        assert_eq!(
+            store.request(
+                "approval-1",
+                "task-1",
+                "local.write",
+                "reason",
+                1_600,
+                2_600
+            ),
+            Err(ApprovalError::AlreadyResolved)
+        );
+    }
+
+    #[test]
+    fn resolved_approval_history_is_bounded() {
+        let mut store = ApprovalStore::with_capacity(4, 2);
+        for index in 1..=3 {
+            let id = format!("approval-{index}");
+            store
+                .request(&id, "task-1", "local.write", "reason", 1_000, 2_000)
+                .expect("approval should be created");
+            store
+                .decide(&id, true, 1_500)
+                .expect("approval should resolve");
+        }
+
+        assert_eq!(
+            store.status("approval-1", 1_600),
+            Err(ApprovalError::NotFound)
+        );
+        assert_eq!(
+            store.status("approval-3", 1_600),
+            Ok(ApprovalStatus::Approved)
         );
     }
 
